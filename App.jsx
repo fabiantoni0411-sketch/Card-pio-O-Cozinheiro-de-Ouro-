@@ -321,13 +321,13 @@ function formatPhone(raw) {
 
 // ---------- Storage helpers ----------
 import { initializeApp } from "firebase/app";
-import { initializeFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { firebaseConfig } from "./firebaseConfig.js";
 
 const firebaseApp = initializeApp(firebaseConfig);
-const db = initializeFirestore(firebaseApp, {
-  experimentalAutoDetectLongPolling: true,
-});
+const db = getFirestore(firebaseApp);
+const auth = getAuth(firebaseApp);
 
 async function loadKey(key, fallback) {
   try {
@@ -346,17 +346,9 @@ async function saveKey(key, value) {
   }
 }
 
-function withTimeout(promise, ms, fallback) {
-  return Promise.race([
-    promise,
-    new Promise((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ]);
-}
-
 // ================= MAIN APP =================
 export default function App() {
   const [loading, setLoading] = useState(true);
-  const [retryCount, setRetryCount] = useState(0);
   const [products, setProducts] = useState([]);
   const [settings, setSettings] = useState(null);
   const [orders, setOrders] = useState([]);
@@ -377,65 +369,34 @@ export default function App() {
   }
   const [isAdmin, setIsAdmin] = useState(false);
 
-  const [loadError, setLoadError] = useState(false);
-  const [errorDetail, setErrorDetail] = useState("");
+  useEffect(() => {
+    (async () => {
+      let p = await loadKey("products", null);
+      if (!p) {
+        p = seedProducts();
+        await saveKey("products", p);
+      }
+      let s = await loadKey("settings", null);
+      if (!s) {
+        s = seedSettings();
+        await saveKey("settings", s);
+      }
+      let o = await loadKey("orders", []);
+      let a = await loadKey("admin-auth", null);
+      setProducts(p);
+      setSettings(s);
+      setOrders(o);
+      setAdminAuth(a);
+      setLoading(false);
+    })();
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const TIMEOUT_MS = 8000;
-      try {
-        // chamada direta (sem engolir erro) só pra diagnóstico: se o Firestore
-        // rejeitar de verdade (em vez de travar), a gente vê o motivo exato aqui.
-        const probe = await withTimeout(
-          getDoc(doc(db, "store", "products")).then((snap) => ({ ok: true, snap })).catch((e) => ({ ok: false, error: e })),
-          TIMEOUT_MS,
-          { ok: false, error: new Error("TIMEOUT: sem resposta em " + TIMEOUT_MS / 1000 + "s") }
-        );
-
-        if (!probe.ok) {
-          if (!cancelled) {
-            setErrorDetail(
-              (probe.error && (probe.error.code || probe.error.message)) || String(probe.error)
-            );
-            setLoadError(true);
-            setLoading(false);
-          }
-          return;
-        }
-
-        let p = probe.snap.exists() ? probe.snap.data().value : null;
-        let s = await loadKey("settings", null);
-        let o = await loadKey("orders", []);
-        let a = await loadKey("admin-auth", null);
-
-        if (!p) {
-          p = seedProducts();
-          await saveKey("products", p);
-        }
-        if (!s) {
-          s = seedSettings();
-          await saveKey("settings", s);
-        }
-        if (!cancelled) {
-          setProducts(p);
-          setSettings(s);
-          setOrders(o);
-          setAdminAuth(a);
-          setLoading(false);
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setErrorDetail((e && e.message) || String(e));
-          setLoadError(true);
-          setLoading(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [retryCount]);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setIsAdmin(!!user);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const persistProducts = useCallback(async (next) => {
     setProducts(next);
@@ -628,38 +589,6 @@ export default function App() {
     }
 
     setView("confirmation");
-  }
-
-  if (loadError) {
-    return (
-      <div className="min-h-screen flex items-center justify-center px-6" style={{ background: C.cream }}>
-        <div className="text-center max-w-sm">
-          <img src={DEFAULT_IMAGE} alt="" className="mx-auto mb-3 w-16 h-16 rounded-full" />
-          <p className="font-bold mb-2" style={{ color: C.redDeep }}>
-            Não conseguimos carregar o cardápio agora.
-          </p>
-          <p className="text-sm mb-4" style={{ color: C.gray }}>
-            Pode ser a internet ou uma instabilidade momentânea. Tenta de novo.
-          </p>
-          {errorDetail && (
-            <p className="text-xs mb-4 p-2 rounded-lg" style={{ background: "#fff", color: C.gray, wordBreak: "break-all" }}>
-              Detalhe técnico: {errorDetail}
-            </p>
-          )}
-          <button
-            onClick={() => {
-              setLoadError(false);
-              setLoading(true);
-              setRetryCount((n) => n + 1);
-            }}
-            className="px-5 py-3 rounded-full font-bold"
-            style={{ background: C.red, color: "#fff" }}
-          >
-            Tentar novamente
-          </button>
-        </div>
-      </div>
-    );
   }
 
   if (loading) {
@@ -1506,30 +1435,27 @@ function OrderStatusCard({ order }) {
 }
 
 // ================= ADMIN =================
-function AdminGate({ isAdmin, setIsAdmin, adminAuth, persistAuth, ...rest }) {
+function AdminGate({ isAdmin, setIsAdmin, ...rest }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
-  const [mode, setMode] = useState(adminAuth ? "login" : "setup");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   if (isAdmin) {
-    return <AdminPanel onLogout={() => setIsAdmin(false)} {...rest} />;
+    return <AdminPanel onLogout={() => signOut(auth)} {...rest} />;
   }
 
-  async function handleSetup() {
-    if (!email.includes("@") || password.length < 4) {
-      setError("Informe um e-mail válido e uma senha com pelo menos 4 caracteres.");
-      return;
-    }
-    await persistAuth({ email: email.trim(), password });
-    setIsAdmin(true);
-  }
-  function handleLogin() {
-    if (adminAuth && email.trim() === adminAuth.email && password === adminAuth.password) {
-      setIsAdmin(true);
-    } else {
+  async function handleLogin() {
+    setError("");
+    setBusy(true);
+    try {
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      // onAuthStateChanged (no App) atualiza isAdmin automaticamente
+    } catch (e) {
       setError("E-mail ou senha incorretos.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1538,7 +1464,7 @@ function AdminGate({ isAdmin, setIsAdmin, adminAuth, persistAuth, ...rest }) {
       <div className="text-center mb-6">
         <Settings size={32} style={{ color: C.red }} className="mx-auto mb-2" />
         <h2 className="text-lg font-extrabold" style={{ color: C.ink }}>
-          {mode === "setup" ? "Criar acesso administrativo" : "Login administrativo"}
+          Login administrativo
         </h2>
       </div>
       <div className="space-y-3">
@@ -1559,15 +1485,13 @@ function AdminGate({ isAdmin, setIsAdmin, adminAuth, persistAuth, ...rest }) {
         </Field>
         {error && <p className="text-xs font-bold" style={{ color: C.redDeep }}>{error}</p>}
         <button
-          onClick={mode === "setup" ? handleSetup : handleLogin}
+          onClick={handleLogin}
+          disabled={busy}
           className="w-full py-3 rounded-full font-extrabold"
-          style={{ background: C.red, color: "#fff" }}
+          style={{ background: C.red, color: "#fff", opacity: busy ? 0.7 : 1 }}
         >
-          {mode === "setup" ? "Criar acesso" : "Entrar"}
+          {busy ? "Entrando..." : "Entrar"}
         </button>
-        <p className="text-[11px] text-center" style={{ color: C.gray }}>
-          Este login é local a esta plataforma (armazenamento simples), não é um sistema de autenticação bancário.
-        </p>
       </div>
     </div>
   );
@@ -1583,53 +1507,25 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
     knownCountRef.current = orders.length;
   }, [orders.length]);
 
-  // "destrava" o som de alerta assim que o admin tocar em qualquer lugar do painel —
-  // os navegadores só permitem tocar áudio depois de um gesto do usuário na página.
-  useEffect(() => {
-    function unlockAudio() {
-      try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) return;
-        if (!audioCtxRef.current) audioCtxRef.current = new Ctx();
-        if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
-      } catch (e) {
-        // ignora
-      }
-    }
-    document.addEventListener("click", unlockAudio, { once: true });
-    document.addEventListener("touchstart", unlockAudio, { once: true });
-    return () => {
-      document.removeEventListener("click", unlockAudio);
-      document.removeEventListener("touchstart", unlockAudio);
-    };
-  }, []);
-
   function playAlertSound() {
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
       const ctx = audioCtxRef.current || new Ctx();
       audioCtxRef.current = ctx;
-      const fire = () => {
-        [0, 260, 520].forEach((delay) => {
-          setTimeout(() => {
-            const o = ctx.createOscillator();
-            const g = ctx.createGain();
-            o.type = "sine";
-            o.frequency.value = 900;
-            g.gain.value = 0.25;
-            o.connect(g);
-            g.connect(ctx.destination);
-            o.start();
-            o.stop(ctx.currentTime + 0.18);
-          }, delay);
-        });
-      };
-      if (ctx.state === "suspended") {
-        ctx.resume().then(fire).catch(fire);
-      } else {
-        fire();
-      }
+      [0, 260, 520].forEach((delay) => {
+        setTimeout(() => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = "sine";
+          o.frequency.value = 900;
+          g.gain.value = 0.25;
+          o.connect(g);
+          g.connect(ctx.destination);
+          o.start();
+          o.stop(ctx.currentTime + 0.18);
+        }, delay);
+      });
     } catch (e) {
       console.error("audio alert error", e);
     }
