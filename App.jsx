@@ -353,6 +353,7 @@ export default function App() {
   const [settings, setSettings] = useState(null);
   const [orders, setOrders] = useState([]);
   const [adminAuth, setAdminAuth] = useState(null);
+  const [categoryConfig, setCategoryConfig] = useState(null);
 
   const isAdminLink = typeof window !== "undefined" && /admin/i.test(window.location.hash || "");
   const [view, setView] = useState(isAdminLink ? "admin" : "store");
@@ -383,6 +384,12 @@ export default function App() {
       }
       let o = await loadKey("orders", []);
       let a = await loadKey("admin-auth", null);
+      let cc = await loadKey("category-config", null);
+      if (!cc) {
+        cc = { flat: FLAT_CATEGORIES, subcats: SUBCATS };
+        await saveKey("category-config", cc);
+      }
+      setCategoryConfig(cc);
       setProducts(p);
       setSettings(s);
       setOrders(o);
@@ -409,6 +416,21 @@ export default function App() {
   const persistOrders = useCallback(async (next) => {
     setOrders(next);
     await saveKey("orders", next);
+  }, []);
+  const addCategory = useCallback(async (group, name) => {
+    setCategoryConfig((prev) => {
+      const base = prev || { flat: FLAT_CATEGORIES, subcats: SUBCATS };
+      if (base.flat.includes(name)) return base; // já existe, não duplica
+      const next = {
+        flat: [...base.flat, name],
+        subcats: {
+          ...base.subcats,
+          [group]: [...(base.subcats[group] || []), name],
+        },
+      };
+      saveKey("category-config", next);
+      return next;
+    });
   }, []);
   const refreshOrders = useCallback(async () => {
     const fresh = await loadKey("orders", []);
@@ -620,7 +642,10 @@ export default function App() {
           persistOrders={persistOrders}
           refreshOrders={refreshOrders}
           setView={setView}
+          categoryConfig={categoryConfig}
+          addCategory={addCategory}
         />
+        <SiteFooter />
       </div>
     );
   }
@@ -637,6 +662,7 @@ export default function App() {
           setActiveCategory={setActiveCategory}
           addToCart={addToCart}
           setView={setView}
+          categoryConfig={categoryConfig}
         />
       )}
 
@@ -680,6 +706,15 @@ export default function App() {
       )}
 
       <SecretAdminFooter onUnlock={() => setView("admin")} />
+      <SiteFooter />
+    </div>
+  );
+}
+
+function SiteFooter() {
+  return (
+    <div className="text-center py-6 text-xs" style={{ color: C.gray }}>
+      Desenvolvido por Faby Bassitii
     </div>
   );
 }
@@ -797,7 +832,8 @@ function TopBar({ settings, view, setView, cartCount }) {
 }
 
 // ================= STORE VIEW =================
-function StoreView({ products, settings, activeCategory, setActiveCategory, addToCart, setView }) {
+function StoreView({ products, settings, activeCategory, setActiveCategory, addToCart, setView, categoryConfig }) {
+  const FLAT = categoryConfig?.flat || FLAT_CATEGORIES;
   useClockTick();
   const open = isStoreOpenNow(settings);
 
@@ -844,7 +880,7 @@ function StoreView({ products, settings, activeCategory, setActiveCategory, addT
       </div>
 
       <div className="flex gap-2 overflow-x-auto pb-2 mb-6 sticky top-[64px] z-30" style={{ background: C.cream }}>
-        {FLAT_CATEGORIES.map((cat) => (
+        {FLAT.map((cat) => (
           <button
             key={cat}
             onClick={() => setActiveCategory(cat)}
@@ -1497,7 +1533,7 @@ function AdminGate({ isAdmin, setIsAdmin, ...rest }) {
   );
 }
 
-function AdminPanel({ onLogout, products, persistProducts, settings, persistSettings, orders, persistOrders, refreshOrders, setView }) {
+function AdminPanel({ onLogout, products, persistProducts, settings, persistSettings, orders, persistOrders, refreshOrders, setView, categoryConfig, addCategory }) {
   const [tab, setTab] = useState("dashboard");
   const [newOrderAlert, setNewOrderAlert] = useState(false);
   const knownCountRef = useRef(orders.length);
@@ -1598,7 +1634,7 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
 
       {tab === "dashboard" && <AdminDashboard products={products} orders={orders} />}
       {tab === "orders" && <AdminOrders orders={orders} persistOrders={persistOrders} />}
-      {tab === "products" && <AdminProducts products={products} persistProducts={persistProducts} />}
+      {tab === "products" && <AdminProducts products={products} persistProducts={persistProducts} categoryConfig={categoryConfig} addCategory={addCategory} />}
       {tab === "neighborhoods" && <AdminNeighborhoods settings={settings} persistSettings={persistSettings} />}
       {tab === "hours" && <AdminHours settings={settings} persistSettings={persistSettings} />}
     </div>
@@ -1709,9 +1745,10 @@ function AdminOrders({ orders, persistOrders }) {
   );
 }
 
-function AdminProducts({ products, persistProducts }) {
+function AdminProducts({ products, persistProducts, categoryConfig, addCategory }) {
   const [editingId, setEditingId] = useState(null);
   const [showNew, setShowNew] = useState(false);
+  const FLAT = categoryConfig?.flat || FLAT_CATEGORIES;
 
   function updateProduct(id, patch) {
     persistProducts(products.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -1726,7 +1763,7 @@ function AdminProducts({ products, persistProducts }) {
     setShowNew(false);
   }
 
-  const grouped = FLAT_CATEGORIES.filter((c) => c !== "Lançamentos").map((cat) => ({
+  const grouped = FLAT.filter((c) => c !== "Lançamentos").map((cat) => ({
     group: cat,
     items: products.filter((p) => p.subcategory === cat),
   })).filter((g) => g.items.length > 0);
@@ -1741,7 +1778,7 @@ function AdminProducts({ products, persistProducts }) {
         <Plus size={14} /> Novo produto
       </button>
 
-      {showNew && <ProductForm onSave={addProduct} onCancel={() => setShowNew(false)} />}
+      {showNew && <ProductForm onSave={addProduct} onCancel={() => setShowNew(false)} categoryConfig={categoryConfig} addCategory={addCategory} />}
 
       {grouped.map(({ group, items }) => (
         <div key={group}>
@@ -1757,6 +1794,8 @@ function AdminProducts({ products, persistProducts }) {
                     setEditingId(null);
                   }}
                   onCancel={() => setEditingId(null)}
+                  categoryConfig={categoryConfig}
+                  addCategory={addCategory}
                 />
               ) : (
                 <div
@@ -1807,10 +1846,11 @@ function AdminProducts({ products, persistProducts }) {
   );
 }
 
-function ProductForm({ initial, onSave, onCancel }) {
+function ProductForm({ initial, onSave, onCancel, categoryConfig, addCategory }) {
+  const SUB = categoryConfig?.subcats || SUBCATS;
   const [name, setName] = useState(initial?.name || "");
   const [group, setGroup] = useState(initial?.group || "Salgados");
-  const [subcategory, setSubcategory] = useState(initial?.subcategory || (SUBCATS["Salgados"][0]));
+  const [subcategory, setSubcategory] = useState(initial?.subcategory || (SUB["Salgados"][0]));
   const [price, setPrice] = useState(initial?.price ?? "");
   const [description, setDescription] = useState(initial?.description || "");
   const [ingredients, setIngredients] = useState(initial?.ingredients || "");
@@ -1818,8 +1858,19 @@ function ProductForm({ initial, onSave, onCancel }) {
   const [image, setImage] = useState(initial?.image || DEFAULT_IMAGE);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
 
-  const subOptions = group === "Bebidas" ? ["Bebidas"] : (SUBCATS[group] || []);
+  const subOptions = group === "Bebidas" ? ["Bebidas"] : (SUB[group] || []);
+
+  function handleCreateCategory() {
+    const trimmed = newCategoryName.trim();
+    if (!trimmed) return;
+    addCategory(group, trimmed);
+    setSubcategory(trimmed);
+    setNewCategoryName("");
+    setCreatingCategory(false);
+  }
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
@@ -1855,16 +1906,62 @@ function ProductForm({ initial, onSave, onCancel }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome do produto" className="p-2 rounded-lg" style={{ border: `1px solid ${C.line}` }} />
         <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Preço" type="number" step="0.01" className="p-2 rounded-lg" style={{ border: `1px solid ${C.line}` }} />
-        <select value={group} onChange={(e) => { setGroup(e.target.value); setSubcategory((SUBCATS[e.target.value] || ["Bebidas"])[0]); }} className="p-2 rounded-lg" style={{ border: `1px solid ${C.line}` }}>
+        <select value={group} onChange={(e) => { setGroup(e.target.value); setSubcategory((SUB[e.target.value] || ["Bebidas"])[0]); setCreatingCategory(false); }} className="p-2 rounded-lg" style={{ border: `1px solid ${C.line}` }}>
           <option value="Salgados">Salgados</option>
           <option value="Doces">Doces</option>
           <option value="Bebidas">Bebidas</option>
         </select>
-        <select value={subcategory} onChange={(e) => setSubcategory(e.target.value)} className="p-2 rounded-lg" style={{ border: `1px solid ${C.line}` }}>
-          {subOptions.map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))}
-        </select>
+        {group !== "Bebidas" && !creatingCategory ? (
+          <select
+            value={subcategory}
+            onChange={(e) => {
+              if (e.target.value === "__new__") {
+                setCreatingCategory(true);
+              } else {
+                setSubcategory(e.target.value);
+              }
+            }}
+            className="p-2 rounded-lg"
+            style={{ border: `1px solid ${C.line}` }}
+          >
+            {subOptions.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+            <option value="__new__">+ Criar nova categoria...</option>
+          </select>
+        ) : group !== "Bebidas" ? (
+          <div className="flex gap-1">
+            <input
+              value={newCategoryName}
+              onChange={(e) => setNewCategoryName(e.target.value)}
+              placeholder="Nome da nova categoria"
+              autoFocus
+              className="flex-1 p-2 rounded-lg"
+              style={{ border: `1px solid ${C.line}` }}
+            />
+            <button
+              type="button"
+              onClick={handleCreateCategory}
+              disabled={!newCategoryName.trim()}
+              className="text-xs font-bold px-3 rounded-lg disabled:opacity-50"
+              style={{ background: C.red, color: "#fff" }}
+            >
+              Criar
+            </button>
+            <button
+              type="button"
+              onClick={() => { setCreatingCategory(false); setNewCategoryName(""); }}
+              className="text-xs font-bold px-3 rounded-lg"
+              style={{ border: `1px solid ${C.line}` }}
+            >
+              X
+            </button>
+          </div>
+        ) : (
+          <select value="Bebidas" disabled className="p-2 rounded-lg" style={{ border: `1px solid ${C.line}` }}>
+            <option value="Bebidas">Bebidas</option>
+          </select>
+        )}
       </div>
       <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Descrição (opcional)" className="w-full p-2 rounded-lg" style={{ border: `1px solid ${C.line}` }} />
       <textarea value={ingredients} onChange={(e) => setIngredients(e.target.value)} placeholder="Ingredientes (opcional)" className="w-full p-2 rounded-lg" style={{ border: `1px solid ${C.line}` }} />
