@@ -389,6 +389,52 @@ export default function App() {
         cc = { flat: FLAT_CATEGORIES, subcats: SUBCATS };
         await saveKey("category-config", cc);
       }
+
+      // Garante que a categoria "Sharwarma" e os 3 lanches existam (criação única, não duplica em recargas futuras)
+      const hasSharwarma = p.some((prod) => prod.subcategory === "Sharwarma");
+      if (!hasSharwarma) {
+        if (!cc.flat.includes("Sharwarma")) {
+          cc = {
+            flat: [...cc.flat, "Sharwarma"],
+            subcats: { ...cc.subcats, Salgados: [...(cc.subcats.Salgados || []), "Sharwarma"] },
+          };
+        }
+        const mkSharwarma = (name, price, description) => ({
+          id: uid("p"),
+          name,
+          subcategory: "Sharwarma",
+          group: "Salgados",
+          price,
+          description,
+          ingredients: "",
+          active: true,
+          featured: false,
+          image: DEFAULT_IMAGE,
+          sold: 0,
+          soldMonth: currentMonthKey(),
+        });
+        p = [
+          ...p,
+          mkSharwarma(
+            "Sharwarma Turco de frango",
+            25.0,
+            "Pão sírio, pedaços de frango, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
+          ),
+          mkSharwarma(
+            "Sharwarma Turco de frango e carne",
+            35.0,
+            "Pão sírio, pedaços de frango e carne, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
+          ),
+          mkSharwarma(
+            "Sharwarma Turco de carne",
+            35.0,
+            "Pão sírio, pedaços de carne, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
+          ),
+        ];
+        await saveKey("category-config", cc);
+        await saveKey("products", p);
+      }
+
       setCategoryConfig(cc);
       setProducts(p);
       setSettings(s);
@@ -431,6 +477,10 @@ export default function App() {
       saveKey("category-config", next);
       return next;
     });
+  }, []);
+  const persistCategoryConfig = useCallback(async (next) => {
+    setCategoryConfig(next);
+    await saveKey("category-config", next);
   }, []);
   const refreshOrders = useCallback(async () => {
     const fresh = await loadKey("orders", []);
@@ -644,6 +694,7 @@ export default function App() {
           setView={setView}
           categoryConfig={categoryConfig}
           addCategory={addCategory}
+          persistCategoryConfig={persistCategoryConfig}
         />
         <SiteFooter />
       </div>
@@ -1533,7 +1584,7 @@ function AdminGate({ isAdmin, setIsAdmin, ...rest }) {
   );
 }
 
-function AdminPanel({ onLogout, products, persistProducts, settings, persistSettings, orders, persistOrders, refreshOrders, setView, categoryConfig, addCategory }) {
+function AdminPanel({ onLogout, products, persistProducts, settings, persistSettings, orders, persistOrders, refreshOrders, setView, categoryConfig, addCategory, persistCategoryConfig }) {
   const [tab, setTab] = useState("dashboard");
   const [newOrderAlert, setNewOrderAlert] = useState(false);
   const knownCountRef = useRef(orders.length);
@@ -1583,6 +1634,7 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
     { k: "dashboard", label: "Painel", icon: BarChart3 },
     { k: "orders", label: "Pedidos", icon: ListOrdered },
     { k: "products", label: "Produtos", icon: Package },
+    { k: "categories", label: "Categorias", icon: ListOrdered },
     { k: "neighborhoods", label: "Bairros/Taxas", icon: MapPin },
     { k: "hours", label: "Horários", icon: Clock },
   ];
@@ -1635,6 +1687,7 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
       {tab === "dashboard" && <AdminDashboard products={products} orders={orders} />}
       {tab === "orders" && <AdminOrders orders={orders} persistOrders={persistOrders} />}
       {tab === "products" && <AdminProducts products={products} persistProducts={persistProducts} categoryConfig={categoryConfig} addCategory={addCategory} />}
+      {tab === "categories" && <AdminCategories categoryConfig={categoryConfig} persistCategoryConfig={persistCategoryConfig} />}
       {tab === "neighborhoods" && <AdminNeighborhoods settings={settings} persistSettings={persistSettings} />}
       {tab === "hours" && <AdminHours settings={settings} persistSettings={persistSettings} />}
     </div>
@@ -1842,6 +1895,55 @@ function AdminProducts({ products, persistProducts, categoryConfig, addCategory 
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function AdminCategories({ categoryConfig, persistCategoryConfig }) {
+  const FLAT = categoryConfig?.flat || FLAT_CATEGORIES;
+
+  function move(index, direction) {
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= FLAT.length) return;
+    const next = [...FLAT];
+    [next[index], next[newIndex]] = [next[newIndex], next[index]];
+    persistCategoryConfig({ ...categoryConfig, flat: next });
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs" style={{ color: C.gray }}>
+        Use as setas pra mudar a ordem em que as categorias aparecem como abas no cardápio.
+      </p>
+      <div className="space-y-1">
+        {FLAT.map((cat, i) => (
+          <div
+            key={cat}
+            className="flex items-center justify-between rounded-lg p-2"
+            style={{ background: C.cream, border: `1px solid ${C.line}` }}
+          >
+            <span className="text-sm font-bold" style={{ color: C.ink }}>{cat}</span>
+            <div className="flex gap-1">
+              <button
+                onClick={() => move(i, -1)}
+                disabled={i === 0}
+                className="text-xs font-bold px-2 py-1 rounded-lg disabled:opacity-30"
+                style={{ border: `1px solid ${C.line}` }}
+              >
+                ▲
+              </button>
+              <button
+                onClick={() => move(i, 1)}
+                disabled={i === FLAT.length - 1}
+                className="text-xs font-bold px-2 py-1 rounded-lg disabled:opacity-30"
+                style={{ border: `1px solid ${C.line}` }}
+              >
+                ▼
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
