@@ -341,8 +341,10 @@ async function loadKey(key, fallback) {
 async function saveKey(key, value) {
   try {
     await setDoc(doc(db, "store", key), { value });
+    return true;
   } catch (e) {
     console.error("storage write error", e);
+    return false;
   }
 }
 
@@ -369,6 +371,12 @@ export default function App() {
     toastTimerRef.current = setTimeout(() => setToast(null), 2200);
   }
   const [isAdmin, setIsAdmin] = useState(false);
+  const [saveError, setSaveError] = useState(null);
+  const [justSaved, setJustSaved] = useState(false);
+  const flashSaved = useCallback(() => {
+    setJustSaved(true);
+    setTimeout(() => setJustSaved(false), 2000);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -390,51 +398,6 @@ export default function App() {
         await saveKey("category-config", cc);
       }
 
-      // Garante que a categoria "Sharwarma" e os 3 lanches existam (criação única, não duplica em recargas futuras)
-      const hasSharwarma = p.some((prod) => prod.subcategory === "Sharwarma");
-      if (!hasSharwarma) {
-        if (!cc.flat.includes("Sharwarma")) {
-          cc = {
-            flat: [...cc.flat, "Sharwarma"],
-            subcats: { ...cc.subcats, Salgados: [...(cc.subcats.Salgados || []), "Sharwarma"] },
-          };
-        }
-        const mkSharwarma = (name, price, description) => ({
-          id: uid("p"),
-          name,
-          subcategory: "Sharwarma",
-          group: "Salgados",
-          price,
-          description,
-          ingredients: "",
-          active: true,
-          featured: false,
-          image: DEFAULT_IMAGE,
-          sold: 0,
-          soldMonth: currentMonthKey(),
-        });
-        p = [
-          ...p,
-          mkSharwarma(
-            "Sharwarma Turco de frango",
-            25.0,
-            "Pão sírio, pedaços de frango, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
-          ),
-          mkSharwarma(
-            "Sharwarma Turco de frango e carne",
-            35.0,
-            "Pão sírio, pedaços de frango e carne, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
-          ),
-          mkSharwarma(
-            "Sharwarma Turco de carne",
-            35.0,
-            "Pão sírio, pedaços de carne, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
-          ),
-        ];
-        await saveKey("category-config", cc);
-        await saveKey("products", p);
-      }
-
       setCategoryConfig(cc);
       setProducts(p);
       setSettings(s);
@@ -451,17 +414,78 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Cria a categoria "Sharwarma" e os 3 lanches, uma única vez, só quando a administradora
+  // estiver logada (só logada é que tem permissão de gravar no banco de dados).
+  useEffect(() => {
+    if (!isAdmin) return;
+    if (!products || !categoryConfig) return;
+    const hasSharwarma = products.some((prod) => prod.subcategory === "Sharwarma");
+    if (hasSharwarma) return;
+    (async () => {
+      let cc = categoryConfig;
+      if (!cc.flat.includes("Sharwarma")) {
+        cc = {
+          flat: [...cc.flat, "Sharwarma"],
+          subcats: { ...cc.subcats, Salgados: [...(cc.subcats.Salgados || []), "Sharwarma"] },
+        };
+      }
+      const mkSharwarma = (name, price, description) => ({
+        id: uid("p"),
+        name,
+        subcategory: "Sharwarma",
+        group: "Salgados",
+        price,
+        description,
+        ingredients: "",
+        active: true,
+        featured: false,
+        image: DEFAULT_IMAGE,
+        sold: 0,
+        soldMonth: currentMonthKey(),
+      });
+      const nextProducts = [
+        ...products,
+        mkSharwarma(
+          "Sharwarma Turco de frango",
+          25.0,
+          "Pão sírio, pedaços de frango, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
+        ),
+        mkSharwarma(
+          "Sharwarma Turco de frango e carne",
+          35.0,
+          "Pão sírio, pedaços de frango e carne, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
+        ),
+        mkSharwarma(
+          "Sharwarma Turco de carne",
+          35.0,
+          "Pão sírio, pedaços de carne, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
+        ),
+      ];
+      const okCc = await saveKey("category-config", cc);
+      const okP = await saveKey("products", nextProducts);
+      if (!okCc || !okP) {
+        setSaveError("Não consegui criar a seção Sharwarma automaticamente (erro ao salvar). Vamos criar manualmente pelo painel.");
+        return;
+      }
+      setCategoryConfig(cc);
+      setProducts(nextProducts);
+    })();
+  }, [isAdmin, products, categoryConfig]);
+
   const persistProducts = useCallback(async (next) => {
     setProducts(next);
-    await saveKey("products", next);
+    const ok = await saveKey("products", next);
+    if (!ok) { setSaveError("Não consegui salvar o produto. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
   }, []);
   const persistSettings = useCallback(async (next) => {
     setSettings(next);
-    await saveKey("settings", next);
+    const ok = await saveKey("settings", next);
+    if (!ok) { setSaveError("Não consegui salvar as configurações. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
   }, []);
   const persistOrders = useCallback(async (next) => {
     setOrders(next);
-    await saveKey("orders", next);
+    const ok = await saveKey("orders", next);
+    if (!ok) { setSaveError("Não consegui salvar o pedido. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
   }, []);
   const addCategory = useCallback(async (group, name) => {
     setCategoryConfig((prev) => {
@@ -474,13 +498,16 @@ export default function App() {
           [group]: [...(base.subcats[group] || []), name],
         },
       };
-      saveKey("category-config", next);
+      saveKey("category-config", next).then((ok) => {
+        if (!ok) { setSaveError("Não consegui salvar a nova categoria. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
+      });
       return next;
     });
   }, []);
   const persistCategoryConfig = useCallback(async (next) => {
     setCategoryConfig(next);
-    await saveKey("category-config", next);
+    const ok = await saveKey("category-config", next);
+    if (!ok) { setSaveError("Não consegui salvar a nova ordem das categorias. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
   }, []);
   const refreshOrders = useCallback(async () => {
     const fresh = await loadKey("orders", []);
@@ -695,6 +722,9 @@ export default function App() {
           categoryConfig={categoryConfig}
           addCategory={addCategory}
           persistCategoryConfig={persistCategoryConfig}
+          saveError={saveError}
+          setSaveError={setSaveError}
+          justSaved={justSaved}
         />
         <SiteFooter />
       </div>
@@ -1584,7 +1614,7 @@ function AdminGate({ isAdmin, setIsAdmin, ...rest }) {
   );
 }
 
-function AdminPanel({ onLogout, products, persistProducts, settings, persistSettings, orders, persistOrders, refreshOrders, setView, categoryConfig, addCategory, persistCategoryConfig }) {
+function AdminPanel({ onLogout, products, persistProducts, settings, persistSettings, orders, persistOrders, refreshOrders, setView, categoryConfig, addCategory, persistCategoryConfig, saveError, setSaveError, justSaved }) {
   const [tab, setTab] = useState("dashboard");
   const [newOrderAlert, setNewOrderAlert] = useState(false);
   const knownCountRef = useRef(orders.length);
@@ -1641,6 +1671,23 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6">
+      {saveError && (
+        <div
+          className="mb-4 p-3 rounded-xl text-sm font-bold flex items-start justify-between gap-2"
+          style={{ background: "#fee2e2", border: "1px solid #fca5a5", color: "#991b1b" }}
+        >
+          <span>⚠️ {saveError}</span>
+          <button onClick={() => setSaveError(null)} className="shrink-0 font-extrabold px-2">✕</button>
+        </div>
+      )}
+      {justSaved && !saveError && (
+        <div
+          className="mb-4 p-3 rounded-xl text-sm font-bold"
+          style={{ background: "#dcfce7", border: "1px solid #86efac", color: "#166534" }}
+        >
+          ✅ Salvo com sucesso!
+        </div>
+      )}
       {newOrderAlert && (
         <button
           onClick={() => {
