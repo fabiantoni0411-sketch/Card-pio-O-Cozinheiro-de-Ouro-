@@ -321,7 +321,7 @@ function formatPhone(raw) {
 
 // ---------- Storage helpers ----------
 import { initializeApp } from "firebase/app";
-import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import { getFirestore, doc, getDoc, setDoc, collection, getDocs, writeBatch, deleteDoc } from "firebase/firestore";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { firebaseConfig } from "./firebaseConfig.js";
 
@@ -344,6 +344,37 @@ async function saveKey(key, value) {
     return { ok: true };
   } catch (e) {
     console.error("storage write error", e);
+    return { ok: false, detail: (e && (e.code || e.message)) || String(e) };
+  }
+}
+
+// Produtos ficam em documentos separados (um por produto), não amontoados
+// num único documento — assim uma foto grande num item não trava o cardápio inteiro.
+async function loadProducts() {
+  try {
+    const snap = await getDocs(collection(db, "products"));
+    if (snap.empty) return null;
+    return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  } catch (e) {
+    console.error("products read error", e);
+    return null;
+  }
+}
+async function saveProducts(next, prevIds) {
+  try {
+    const batch = writeBatch(db);
+    const nextIds = new Set(next.map((p) => p.id));
+    next.forEach((p) => {
+      const { id, ...data } = p;
+      batch.set(doc(db, "products", id), data);
+    });
+    (prevIds || []).forEach((id) => {
+      if (!nextIds.has(id)) batch.delete(doc(db, "products", id));
+    });
+    await batch.commit();
+    return { ok: true };
+  } catch (e) {
+    console.error("products write error", e);
     return { ok: false, detail: (e && (e.code || e.message)) || String(e) };
   }
 }
@@ -378,13 +409,16 @@ export default function App() {
     setTimeout(() => setJustSaved(false), 2000);
   }, []);
 
+  const productIdsRef = useRef([]);
+
   useEffect(() => {
     (async () => {
-      let p = await loadKey("products", null);
+      let p = await loadProducts();
       if (!p) {
         p = seedProducts();
-        await saveKey("products", p);
+        await saveProducts(p, []);
       }
+      productIdsRef.current = p.map((x) => x.id);
       let s = await loadKey("settings", null);
       if (!s) {
         s = seedSettings();
@@ -462,11 +496,12 @@ export default function App() {
         ),
       ];
       const okCc = await saveKey("category-config", cc);
-      const okP = await saveKey("products", nextProducts);
+      const okP = await saveProducts(nextProducts, productIdsRef.current);
       if (!okCc.ok || !okP.ok) {
         setSaveError("Não consegui criar a seção Sharwarma automaticamente. Detalhe técnico: " + (okCc.detail || okP.detail));
         return;
       }
+      productIdsRef.current = nextProducts.map((p) => p.id);
       setCategoryConfig(cc);
       setProducts(nextProducts);
     })();
@@ -474,8 +509,8 @@ export default function App() {
 
   const persistProducts = useCallback(async (next) => {
     setProducts(next);
-    const r = await saveKey("products", next);
-    if (!r.ok) { setSaveError("Não consegui salvar o produto. Detalhe técnico: " + r.detail); } else { setSaveError(null); flashSaved(); }
+    const r = await saveProducts(next, productIdsRef.current);
+    if (!r.ok) { setSaveError("Não consegui salvar o produto. Detalhe técnico: " + r.detail); } else { productIdsRef.current = next.map((p) => p.id); setSaveError(null); flashSaved(); }
   }, []);
   const persistSettings = useCallback(async (next) => {
     setSettings(next);
@@ -1734,7 +1769,7 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
       {tab === "dashboard" && <AdminDashboard products={products} orders={orders} />}
       {tab === "orders" && <AdminOrders orders={orders} persistOrders={persistOrders} />}
       {tab === "products" && <AdminProducts products={products} persistProducts={persistProducts} categoryConfig={categoryConfig} addCategory={addCategory} />}
-      {tab === "categories" && <AdminCategories categoryConfig={categoryConfig} persistCategoryConfig={persistCategoryConfig} />}
+      {tab === "categories" && <AdminCategories categoryConfig={categoryConfig} persistCategoryConfig={persistCategoryConfig} products={products} persistProducts={persistProducts} />}
       {tab === "neighborhoods" && <AdminNeighborhoods settings={settings} persistSettings={persistSettings} />}
       {tab === "hours" && <AdminHours settings={settings} persistSettings={persistSettings} />}
     </div>
@@ -1946,8 +1981,11 @@ function AdminProducts({ products, persistProducts, categoryConfig, addCategory 
   );
 }
 
-function AdminCategories({ categoryConfig, persistCategoryConfig }) {
+function AdminCategories({ categoryConfig, persistCategoryConfig, products, persistProducts }) {
   const FLAT = categoryConfig?.flat || FLAT_CATEGORIES;
+  const SUB = categoryConfig?.subcats || SUBCATS;
+  const [editingCat, setEditingCat] = useState(null);
+  const [editValue, setEditValue] = useState("");
 
   function move(index, direction) {
     const newIndex = index + direction;
@@ -1957,20 +1995,76 @@ function AdminCategories({ categoryConfig, persistCategoryConfig }) {
     persistCategoryConfig({ ...categoryConfig, flat: next });
   }
 
+  function renameConfig(oldName, newName) {
+    const nextFlat = FLAT.map((c) => (c === oldName ? newName : c));
+    const nextSubcats = {};
+    Object.keys(SUB).forEach((group) => {
+      nextSubcats[group] = (SUB[group] || []).map((c) => (c === oldName ? newName : c));
+    });
+    return { flat: nextFlat, subcats: nextSubcats };
+  }
+
+  function startRename(cat) {
+    setEditingCat(cat);
+    setEditValue(cat);
+  }
+
+  function confirmRename(oldName) {
+    const trimmed = editValue.trim();
+    setEditingCat(null);
+    if (!trimmed || trimmed === oldName) return;
+    if (FLAT.includes(trimmed)) {
+      alert('Já existe uma categoria chamada "' + trimmed + '".');
+      return;
+    }
+    persistCategoryConfig(renameConfig(oldName, trimmed));
+    const affected = products.filter((p) => p.subcategory === oldName);
+    if (affected.length > 0) {
+      persistProducts(products.map((p) => (p.subcategory === oldName ? { ...p, subcategory: trimmed } : p)));
+    }
+  }
+
+  function deleteCategory(cat) {
+    const count = products.filter((p) => p.subcategory === cat).length;
+    if (count > 0) {
+      alert('Essa categoria tem ' + count + ' produto(s) cadastrado(s). Mova ou exclua esses produtos primeiro, antes de apagar a categoria "' + cat + '".');
+      return;
+    }
+    if (!confirm('Excluir a categoria "' + cat + '"? Essa ação não pode ser desfeita.')) return;
+    const nextFlat = FLAT.filter((c) => c !== cat);
+    const nextSubcats = {};
+    Object.keys(SUB).forEach((group) => {
+      nextSubcats[group] = (SUB[group] || []).filter((c) => c !== cat);
+    });
+    persistCategoryConfig({ flat: nextFlat, subcats: nextSubcats });
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-xs" style={{ color: C.gray }}>
-        Use as setas pra mudar a ordem em que as categorias aparecem como abas no cardápio.
+        Use as setas pra mudar a ordem em que as categorias aparecem como abas no cardápio. Toque no lápis pra renomear, ou na lixeira pra excluir (só é possível excluir categorias sem produtos).
       </p>
       <div className="space-y-1">
         {FLAT.map((cat, i) => (
           <div
             key={cat}
-            className="flex items-center justify-between rounded-lg p-2"
+            className="flex items-center justify-between rounded-lg p-2 gap-2"
             style={{ background: C.cream, border: `1px solid ${C.line}` }}
           >
-            <span className="text-sm font-bold" style={{ color: C.ink }}>{cat}</span>
-            <div className="flex gap-1">
+            {editingCat === cat ? (
+              <input
+                autoFocus
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") confirmRename(cat); if (e.key === "Escape") setEditingCat(null); }}
+                onBlur={() => confirmRename(cat)}
+                className="text-sm font-bold flex-1 min-w-0 px-2 py-1 rounded outline-none"
+                style={{ border: `1px solid ${C.red}`, color: C.ink }}
+              />
+            ) : (
+              <span className="text-sm font-bold flex-1 min-w-0 truncate" style={{ color: C.ink }}>{cat}</span>
+            )}
+            <div className="flex gap-1 shrink-0">
               <button
                 onClick={() => move(i, -1)}
                 disabled={i === 0}
@@ -1986,6 +2080,22 @@ function AdminCategories({ categoryConfig, persistCategoryConfig }) {
                 style={{ border: `1px solid ${C.line}` }}
               >
                 ▼
+              </button>
+              <button
+                onClick={() => startRename(cat)}
+                className="p-1.5 rounded-lg"
+                style={{ border: `1px solid ${C.line}` }}
+                aria-label="Renomear categoria"
+              >
+                <Pencil size={14} />
+              </button>
+              <button
+                onClick={() => deleteCategory(cat)}
+                className="p-1.5 rounded-lg"
+                style={{ border: `1px solid ${C.line}`, color: C.redDeep }}
+                aria-label="Excluir categoria"
+              >
+                <Trash2 size={14} />
               </button>
             </div>
           </div>
