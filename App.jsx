@@ -341,10 +341,10 @@ async function loadKey(key, fallback) {
 async function saveKey(key, value) {
   try {
     await setDoc(doc(db, "store", key), { value });
-    return true;
+    return { ok: true };
   } catch (e) {
     console.error("storage write error", e);
-    return false;
+    return { ok: false, detail: (e && (e.code || e.message)) || String(e) };
   }
 }
 
@@ -463,8 +463,8 @@ export default function App() {
       ];
       const okCc = await saveKey("category-config", cc);
       const okP = await saveKey("products", nextProducts);
-      if (!okCc || !okP) {
-        setSaveError("Não consegui criar a seção Sharwarma automaticamente (erro ao salvar). Vamos criar manualmente pelo painel.");
+      if (!okCc.ok || !okP.ok) {
+        setSaveError("Não consegui criar a seção Sharwarma automaticamente. Detalhe técnico: " + (okCc.detail || okP.detail));
         return;
       }
       setCategoryConfig(cc);
@@ -474,18 +474,18 @@ export default function App() {
 
   const persistProducts = useCallback(async (next) => {
     setProducts(next);
-    const ok = await saveKey("products", next);
-    if (!ok) { setSaveError("Não consegui salvar o produto. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
+    const r = await saveKey("products", next);
+    if (!r.ok) { setSaveError("Não consegui salvar o produto. Detalhe técnico: " + r.detail); } else { setSaveError(null); flashSaved(); }
   }, []);
   const persistSettings = useCallback(async (next) => {
     setSettings(next);
-    const ok = await saveKey("settings", next);
-    if (!ok) { setSaveError("Não consegui salvar as configurações. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
+    const r = await saveKey("settings", next);
+    if (!r.ok) { setSaveError("Não consegui salvar as configurações. Detalhe técnico: " + r.detail); } else { setSaveError(null); flashSaved(); }
   }, []);
   const persistOrders = useCallback(async (next) => {
     setOrders(next);
-    const ok = await saveKey("orders", next);
-    if (!ok) { setSaveError("Não consegui salvar o pedido. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
+    const r = await saveKey("orders", next);
+    if (!r.ok) { setSaveError("Não consegui salvar o pedido. Detalhe técnico: " + r.detail); } else { setSaveError(null); flashSaved(); }
   }, []);
   const addCategory = useCallback(async (group, name) => {
     setCategoryConfig((prev) => {
@@ -498,16 +498,16 @@ export default function App() {
           [group]: [...(base.subcats[group] || []), name],
         },
       };
-      saveKey("category-config", next).then((ok) => {
-        if (!ok) { setSaveError("Não consegui salvar a nova categoria. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
+      saveKey("category-config", next).then((r) => {
+        if (!r.ok) { setSaveError("Não consegui salvar a nova categoria. Detalhe técnico: " + r.detail); } else { setSaveError(null); flashSaved(); }
       });
       return next;
     });
   }, []);
   const persistCategoryConfig = useCallback(async (next) => {
     setCategoryConfig(next);
-    const ok = await saveKey("category-config", next);
-    if (!ok) { setSaveError("Não consegui salvar a nova ordem das categorias. Erro ao gravar no banco de dados."); } else { setSaveError(null); flashSaved(); }
+    const r = await saveKey("category-config", next);
+    if (!r.ok) { setSaveError("Não consegui salvar a nova ordem das categorias. Detalhe técnico: " + r.detail); } else { setSaveError(null); flashSaved(); }
   }, []);
   const refreshOrders = useCallback(async () => {
     const fresh = await loadKey("orders", []);
