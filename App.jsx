@@ -914,12 +914,23 @@ function StoreView({ products, settings, activeCategory, setActiveCategory, addT
   const open = isStoreOpenNow(settings);
 
   const items = useMemo(() => {
-    return products.filter((p) => {
+    const filtered = products.filter((p) => {
       if (!p.active) return false;
       if (activeCategory === "Lançamentos") return !!p.featured;
       return p.subcategory === activeCategory;
     });
-  }, [products, activeCategory]);
+    if (activeCategory === "Lançamentos") {
+      // Agrupa por categoria (seguindo a ordem das abas) e, dentro de cada
+      // categoria, ordena por ordem alfabética.
+      return [...filtered].sort((a, b) => {
+        const ai = FLAT.indexOf(a.subcategory);
+        const bi = FLAT.indexOf(b.subcategory);
+        if (ai !== bi) return ai - bi;
+        return a.name.localeCompare(b.name, "pt-BR");
+      });
+    }
+    return [...filtered].sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  }, [products, activeCategory, FLAT]);
 
   return (
     <div className="max-w-3xl mx-auto px-4 pb-24">
@@ -1662,6 +1673,7 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
     { k: "categories", label: "Categorias", icon: ListOrdered },
     { k: "neighborhoods", label: "Bairros/Taxas", icon: MapPin },
     { k: "hours", label: "Horários", icon: Clock },
+    { k: "print", label: "Imprimir cardápio", icon: ChefHat },
   ];
 
   return (
@@ -1732,6 +1744,7 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
       {tab === "categories" && <AdminCategories categoryConfig={categoryConfig} persistCategoryConfig={persistCategoryConfig} products={products} persistProducts={persistProducts} />}
       {tab === "neighborhoods" && <AdminNeighborhoods settings={settings} persistSettings={persistSettings} />}
       {tab === "hours" && <AdminHours settings={settings} persistSettings={persistSettings} />}
+      {tab === "print" && <AdminPrintMenu products={products} settings={settings} persistSettings={persistSettings} categoryConfig={categoryConfig} />}
     </div>
   );
 }
@@ -1840,6 +1853,115 @@ function AdminOrders({ orders, persistOrders }) {
   );
 }
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Ferramenta genérica de "buscar e substituir" nos produtos — reutilizável
+// pra qualquer troca de texto em massa (não só o caso do "artesanal").
+function BulkEditTool({ products, persistProducts, FLAT }) {
+  const [open, setOpen] = useState(false);
+  const [category, setCategory] = useState("Todas");
+  const [field, setField] = useState("description");
+  const [search, setSearch] = useState("");
+  const [replace, setReplace] = useState("");
+
+  const matches = useMemo(() => {
+    if (!search.trim()) return [];
+    const re = new RegExp(escapeRegExp(search), "gi");
+    return products
+      .filter((p) => category === "Todas" || p.subcategory === category)
+      .map((p) => {
+        const text = p[field] || "";
+        if (!re.test(text)) return null;
+        re.lastIndex = 0;
+        const newText = text.replace(re, replace);
+        return newText === text ? null : { id: p.id, name: p.name, oldText: text, newText };
+      })
+      .filter(Boolean);
+  }, [products, category, field, search, replace]);
+
+  function apply() {
+    if (matches.length === 0) return;
+    const byId = new Map(matches.map((m) => [m.id, m.newText]));
+    const next = products.map((p) => (byId.has(p.id) ? { ...p, [field]: byId.get(p.id) } : p));
+    persistProducts(next);
+    setSearch("");
+    setReplace("");
+  }
+
+  return (
+    <div className="rounded-xl p-3" style={{ background: C.cream, border: `1px solid ${C.line}` }}>
+      <button onClick={() => setOpen((v) => !v)} className="text-sm font-bold" style={{ color: C.ink }}>
+        {open ? "▾" : "▸"} Buscar e substituir em massa
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs" style={{ color: C.gray }}>
+            Troca um texto por outro em vários produtos de uma vez só — útil pra corrigir a mesma coisa em muitos itens sem editar um por um.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-bold" style={{ color: C.ink }}>Categoria</label>
+              <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full text-sm rounded-lg p-2" style={{ border: `1px solid ${C.line}` }}>
+                <option value="Todas">Todas as categorias</option>
+                {FLAT.filter((c) => c !== "Lançamentos").map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-bold" style={{ color: C.ink }}>Campo</label>
+              <select value={field} onChange={(e) => setField(e.target.value)} className="w-full text-sm rounded-lg p-2" style={{ border: `1px solid ${C.line}` }}>
+                <option value="description">Descrição</option>
+                <option value="name">Nome</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-bold" style={{ color: C.ink }}>Buscar por</label>
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='ex: "artesanal de 75g"' className="w-full text-sm rounded-lg p-2" style={{ border: `1px solid ${C.line}` }} />
+          </div>
+          <div>
+            <label className="text-xs font-bold" style={{ color: C.ink }}>Substituir por</label>
+            <input value={replace} onChange={(e) => setReplace(e.target.value)} placeholder='ex: "de 56g" (deixe vazio pra apagar)' className="w-full text-sm rounded-lg p-2" style={{ border: `1px solid ${C.line}` }} />
+          </div>
+
+          {search.trim() && (
+            <div className="text-xs" style={{ color: C.gray }}>
+              {matches.length === 0 ? (
+                <p>Nenhum item encontrado com esse texto.</p>
+              ) : (
+                <>
+                  <p className="font-bold mb-1" style={{ color: C.ink }}>{matches.length} item(ns) serão alterados:</p>
+                  <ul className="space-y-1 max-h-40 overflow-y-auto">
+                    {matches.map((m) => (
+                      <li key={m.id}>
+                        <span className="font-bold">{m.name}</span>: "{m.oldText}" → "{m.newText}"
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+
+          <button
+            onClick={() => {
+              if (matches.length > 0 && confirm(`Aplicar essa troca em ${matches.length} item(ns)?`)) apply();
+            }}
+            disabled={matches.length === 0}
+            className="text-xs font-bold px-3 py-2 rounded-full disabled:opacity-40"
+            style={{ background: C.red, color: "#fff" }}
+          >
+            Aplicar em {matches.length} item(ns)
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AdminProducts({ products, persistProducts, categoryConfig, addCategory }) {
   const [editingId, setEditingId] = useState(null);
   const [showNew, setShowNew] = useState(false);
@@ -1876,6 +1998,8 @@ function AdminProducts({ products, persistProducts, categoryConfig, addCategory 
       >
         <Plus size={14} /> Novo produto
       </button>
+
+      <BulkEditTool products={products} persistProducts={persistProducts} FLAT={FLAT} />
 
       {showNew && <ProductForm onSave={addProduct} onCancel={() => setShowNew(false)} categoryConfig={categoryConfig} addCategory={addCategory} />}
 
@@ -2276,6 +2400,112 @@ function AdminNeighborhoods({ settings, persistSettings }) {
         <button onClick={addNeighborhood} className="px-3 rounded-lg font-bold text-xs" style={{ background: C.ink, color: "#fff" }}>
           Adicionar
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ================= IMPRIMIR CARDÁPIO (PDF) =================
+function AdminPrintMenu({ products, settings, persistSettings, categoryConfig }) {
+  const [instagram, setInstagram] = useState(settings.instagram || "");
+  const FLAT = categoryConfig?.flat || FLAT_CATEGORIES;
+
+  function saveInstagram() {
+    persistSettings({ ...settings, instagram: instagram.trim() });
+  }
+
+  const groups = FLAT.filter((c) => c !== "Lançamentos")
+    .map((cat) => ({
+      cat,
+      items: products
+        .filter((p) => p.active && p.subcategory === cat)
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name, "pt-BR")),
+    }))
+    .filter((g) => g.items.length > 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="no-print space-y-3 rounded-xl p-4" style={{ background: C.cream, border: `1px solid ${C.line}` }}>
+        <p className="text-sm" style={{ color: C.ink }}>
+          Gera um cardápio pronto pra imprimir (ou salvar como PDF): capa com o logo, os produtos organizados em
+          folhas A4, e uma última página com os contatos do restaurante.
+        </p>
+        <div>
+          <label className="text-xs font-bold" style={{ color: C.ink }}>Instagram (opcional, aparece na última página)</label>
+          <input
+            value={instagram}
+            onChange={(e) => setInstagram(e.target.value)}
+            onBlur={saveInstagram}
+            placeholder="@ocozinheirodeouro"
+            className="w-full text-sm rounded-lg p-2 mt-1"
+            style={{ border: `1px solid ${C.line}` }}
+          />
+        </div>
+        <button
+          onClick={() => window.print()}
+          className="text-sm font-bold px-4 py-2 rounded-full"
+          style={{ background: C.red, color: "#fff" }}
+        >
+          Imprimir / Salvar como PDF
+        </button>
+        <p className="text-xs" style={{ color: C.gray }}>
+          Ao tocar no botão, escolha "Salvar como PDF" na tela de impressão do seu celular pra baixar o arquivo em
+          vez de imprimir na hora.
+        </p>
+      </div>
+
+      <div className="print-area">
+        <style>{`
+          @media print {
+            @page { size: A4; margin: 14mm; }
+            body * { visibility: hidden; }
+            .print-area, .print-area * { visibility: visible; }
+            .print-area { position: absolute; top: 0; left: 0; width: 100%; }
+            .print-page { break-after: page; }
+            .print-page:last-child { break-after: auto; }
+            .print-item { break-inside: avoid; }
+          }
+          @media screen {
+            .print-area { border: 1px dashed ${C.line}; padding: 12px; margin-top: 12px; }
+            .print-page + .print-page { border-top: 2px dashed ${C.line}; margin-top: 16px; padding-top: 16px; }
+          }
+        `}</style>
+
+        {/* Capa */}
+        <div className="print-page flex flex-col items-center justify-center text-center" style={{ minHeight: "70vh" }}>
+          <img src={DEFAULT_IMAGE} alt="Logo" style={{ width: 260, height: 260, borderRadius: "50%", border: `4px solid ${C.red}` }} />
+          <h1 className="text-3xl font-extrabold mt-6" style={{ color: C.ink }}>{settings.storeName || "O Cozinheiro de Ouro"}</h1>
+          <p className="text-lg mt-2" style={{ color: C.gray }}>Cardápio</p>
+        </div>
+
+        {/* Produtos, por categoria */}
+        {groups.map((g) => (
+          <div key={g.cat} className="print-page">
+            <h2 className="text-xl font-extrabold mb-3" style={{ color: C.red }}>{g.cat}</h2>
+            <div className="space-y-3">
+              {g.items.map((p) => (
+                <div key={p.id} className="print-item flex justify-between gap-3 pb-2" style={{ borderBottom: `1px solid ${C.line}` }}>
+                  <div>
+                    <p className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</p>
+                    {p.description && <p className="text-xs" style={{ color: C.gray }}>{p.description}</p>}
+                  </div>
+                  <p className="font-bold text-sm shrink-0" style={{ color: C.ink }}>{money(p.price)}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+
+        {/* Contatos */}
+        <div className="print-page flex flex-col items-center justify-center text-center" style={{ minHeight: "70vh" }}>
+          <img src={DEFAULT_IMAGE} alt="Logo" style={{ width: 100, height: 100, borderRadius: "50%", border: `2px solid ${C.red}` }} />
+          <h2 className="text-2xl font-extrabold mt-4" style={{ color: C.ink }}>Fale com a gente</h2>
+          <div className="mt-4 space-y-2 text-base" style={{ color: C.ink }}>
+            {settings.whatsapp && <p>📱 WhatsApp: {formatPhone(settings.whatsapp)}</p>}
+            {instagram && <p>📷 Instagram: {instagram.startsWith("@") ? instagram : "@" + instagram}</p>}
+          </div>
+        </div>
       </div>
     </div>
   );
