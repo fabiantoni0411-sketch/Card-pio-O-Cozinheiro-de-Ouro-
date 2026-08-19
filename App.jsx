@@ -2458,17 +2458,33 @@ function AdminPrintMenu({ products, settings, persistSettings, categoryConfig })
       <div className="print-area">
         <style>{`
           @media print {
-            @page { size: A4; margin: 14mm; }
+            @page { size: A4; margin: 12mm; }
             body * { visibility: hidden; }
             .print-area, .print-area * { visibility: visible; }
             .print-area { position: absolute; top: 0; left: 0; width: 100%; }
             .print-page { break-after: page; }
             .print-page:last-child { break-after: auto; }
+            .menu-flow { column-count: 2; column-gap: 10mm; column-fill: auto; }
+            .category-block { break-inside: avoid-column; margin-bottom: 5mm; }
             .print-item { break-inside: avoid; }
           }
           @media screen {
             .print-area { border: 1px dashed ${C.line}; padding: 12px; margin-top: 12px; }
             .print-page + .print-page { border-top: 2px dashed ${C.line}; margin-top: 16px; padding-top: 16px; }
+            .menu-flow { columns: 2 320px; column-gap: 24px; }
+            .category-block { break-inside: avoid-column; margin-bottom: 18px; }
+          }
+          .category-title {
+            background: ${C.red};
+            color: #fff;
+            font-weight: 800;
+            font-size: 1.05rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            padding: 6px 12px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            display: inline-block;
           }
         `}</style>
 
@@ -2479,23 +2495,26 @@ function AdminPrintMenu({ products, settings, persistSettings, categoryConfig })
           <p className="text-lg mt-2" style={{ color: C.gray }}>Cardápio</p>
         </div>
 
-        {/* Produtos, por categoria */}
-        {groups.map((g) => (
-          <div key={g.cat} className="print-page">
-            <h2 className="text-xl font-extrabold mb-3" style={{ color: C.red }}>{g.cat}</h2>
-            <div className="space-y-3">
-              {g.items.map((p) => (
-                <div key={p.id} className="print-item flex justify-between gap-3 pb-2" style={{ borderBottom: `1px solid ${C.line}` }}>
-                  <div>
-                    <p className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</p>
+        {/* Produtos: flui em duas colunas, preenchendo a folha; categorias podem
+            dividir espaço na mesma página, ou se estender por mais de uma. */}
+        <div className="print-page menu-flow">
+          {groups.map((g) => (
+            <div key={g.cat} className="category-block">
+              <span className="category-title">{g.cat}</span>
+              <div className="space-y-2 mt-1">
+                {g.items.map((p) => (
+                  <div key={p.id} className="print-item pb-1.5 mb-1.5" style={{ borderBottom: `1px solid ${C.line}` }}>
+                    <div className="flex justify-between gap-2">
+                      <p className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</p>
+                      <p className="font-bold text-sm shrink-0" style={{ color: C.ink }}>{money(p.price)}</p>
+                    </div>
                     {p.description && <p className="text-xs" style={{ color: C.gray }}>{p.description}</p>}
                   </div>
-                  <p className="font-bold text-sm shrink-0" style={{ color: C.ink }}>{money(p.price)}</p>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
 
         {/* Contatos */}
         <div className="print-page flex flex-col items-center justify-center text-center" style={{ minHeight: "70vh" }}>
