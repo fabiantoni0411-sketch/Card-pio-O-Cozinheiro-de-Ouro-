@@ -448,65 +448,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Cria a categoria "Sharwarma" e os 3 lanches, uma única vez, só quando a administradora
-  // estiver logada (só logada é que tem permissão de gravar no banco de dados).
-  useEffect(() => {
-    if (!isAdmin) return;
-    if (!products || !categoryConfig) return;
-    const hasSharwarma = products.some((prod) => prod.subcategory === "Sharwarma");
-    if (hasSharwarma) return;
-    (async () => {
-      let cc = categoryConfig;
-      if (!cc.flat.includes("Sharwarma")) {
-        cc = {
-          flat: [...cc.flat, "Sharwarma"],
-          subcats: { ...cc.subcats, Salgados: [...(cc.subcats.Salgados || []), "Sharwarma"] },
-        };
-      }
-      const mkSharwarma = (name, price, description) => ({
-        id: uid("p"),
-        name,
-        subcategory: "Sharwarma",
-        group: "Salgados",
-        price,
-        description,
-        ingredients: "",
-        active: true,
-        featured: false,
-        image: DEFAULT_IMAGE,
-        sold: 0,
-        soldMonth: currentMonthKey(),
-      });
-      const nextProducts = [
-        ...products,
-        mkSharwarma(
-          "Sharwarma Turco de frango",
-          25.0,
-          "Pão sírio, pedaços de frango, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
-        ),
-        mkSharwarma(
-          "Sharwarma Turco de frango e carne",
-          35.0,
-          "Pão sírio, pedaços de frango e carne, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
-        ),
-        mkSharwarma(
-          "Sharwarma Turco de carne",
-          35.0,
-          "Pão sírio, pedaços de carne, salada de repolho, tomate, molho árabe (alho e tahine) e batata frita (dentro do lanche)."
-        ),
-      ];
-      const okCc = await saveKey("category-config", cc);
-      const okP = await saveProducts(nextProducts, productIdsRef.current);
-      if (!okCc.ok || !okP.ok) {
-        setSaveError("Não consegui criar a seção Sharwarma automaticamente. Detalhe técnico: " + (okCc.detail || okP.detail));
-        return;
-      }
-      productIdsRef.current = nextProducts.map((p) => p.id);
-      setCategoryConfig(cc);
-      setProducts(nextProducts);
-    })();
-  }, [isAdmin, products, categoryConfig]);
-
   const persistProducts = useCallback(async (next) => {
     setProducts(next);
     const r = await saveProducts(next, productIdsRef.current);
