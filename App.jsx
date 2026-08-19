@@ -1857,6 +1857,10 @@ function AdminProducts({ products, persistProducts, categoryConfig, addCategory 
     persistProducts([...products, { id: uid("p"), sold: 0, soldMonth: currentMonthKey(), active: true, featured: false, ...data }]);
     setShowNew(false);
   }
+  function duplicateProduct(p) {
+    const copy = { ...p, id: uid("p"), name: p.name + " (cópia)", sold: 0, soldMonth: currentMonthKey() };
+    persistProducts([...products, copy]);
+  }
 
   const grouped = FLAT.filter((c) => c !== "Lançamentos").map((cat) => ({
     group: cat,
@@ -1920,6 +1924,9 @@ function AdminProducts({ products, persistProducts, categoryConfig, addCategory 
                     </button>
                     <button onClick={() => setEditingId(p.id)} className="p-1" style={{ color: C.ink }}>
                       <Pencil size={14} />
+                    </button>
+                    <button onClick={() => duplicateProduct(p)} className="p-1" style={{ color: C.ink }} aria-label="Duplicar produto">
+                      <Copy size={14} />
                     </button>
                     <button
                       onClick={() => {
