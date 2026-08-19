@@ -360,16 +360,18 @@ async function loadProducts() {
     return null;
   }
 }
-async function saveProducts(next, prevIds) {
+async function saveProductsDiff(changed, removedIds) {
   try {
+    if ((!changed || changed.length === 0) && (!removedIds || removedIds.length === 0)) {
+      return { ok: true };
+    }
     const batch = writeBatch(db);
-    const nextIds = new Set(next.map((p) => p.id));
-    next.forEach((p) => {
+    (changed || []).forEach((p) => {
       const { id, ...data } = p;
       batch.set(doc(db, "products", id), data);
     });
-    (prevIds || []).forEach((id) => {
-      if (!nextIds.has(id)) batch.delete(doc(db, "products", id));
+    (removedIds || []).forEach((id) => {
+      batch.delete(doc(db, "products", id));
     });
     await batch.commit();
     return { ok: true };
@@ -410,15 +412,17 @@ export default function App() {
   }, []);
 
   const productIdsRef = useRef([]);
+  const productsRef = useRef([]);
 
   useEffect(() => {
     (async () => {
       let p = await loadProducts();
       if (!p) {
         p = seedProducts();
-        await saveProducts(p, []);
+        await saveProductsDiff(p, []);
       }
       productIdsRef.current = p.map((x) => x.id);
+      productsRef.current = p;
       let s = await loadKey("settings", null);
       if (!s) {
         s = seedSettings();
@@ -449,9 +453,24 @@ export default function App() {
   }, []);
 
   const persistProducts = useCallback(async (next) => {
+    const prev = productsRef.current || [];
     setProducts(next);
-    const r = await saveProducts(next, productIdsRef.current);
-    if (!r.ok) { setSaveError("Não consegui salvar o produto. Detalhe técnico: " + r.detail); } else { productIdsRef.current = next.map((p) => p.id); setSaveError(null); flashSaved(); }
+    const prevById = new Map(prev.map((p) => [p.id, p]));
+    const changed = next.filter((p) => {
+      const old = prevById.get(p.id);
+      return !old || JSON.stringify(old) !== JSON.stringify(p);
+    });
+    const nextIds = new Set(next.map((p) => p.id));
+    const removedIds = prev.filter((p) => !nextIds.has(p.id)).map((p) => p.id);
+    const r = await saveProductsDiff(changed, removedIds);
+    if (!r.ok) {
+      setSaveError("Não consegui salvar o produto. Detalhe técnico: " + r.detail);
+    } else {
+      productsRef.current = next;
+      productIdsRef.current = next.map((p) => p.id);
+      setSaveError(null);
+      flashSaved();
+    }
   }, []);
   const persistSettings = useCallback(async (next) => {
     setSettings(next);
