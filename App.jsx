@@ -350,6 +350,27 @@ async function saveKey(key, value) {
 
 // Produtos ficam em documentos separados (um por produto), não amontoados
 // num único documento — assim uma foto grande num item não trava o cardápio inteiro.
+async function loadCategoryImages() {
+  try {
+    const snap = await getDocs(collection(db, "category-images"));
+    const map = {};
+    snap.forEach((d) => { map[d.data().name] = d.data().image; });
+    return map;
+  } catch (e) {
+    console.error("category-images read error", e);
+    return {};
+  }
+}
+async function saveCategoryImage(name, image) {
+  try {
+    const slug = encodeURIComponent(name);
+    await setDoc(doc(db, "category-images", slug), { name, image });
+    return { ok: true };
+  } catch (e) {
+    console.error("category-images write error", e);
+    return { ok: false, detail: (e && (e.code || e.message)) || String(e) };
+  }
+}
 async function loadProducts() {
   try {
     const snap = await getDocs(collection(db, "products"));
@@ -389,6 +410,7 @@ export default function App() {
   const [orders, setOrders] = useState([]);
   const [adminAuth, setAdminAuth] = useState(null);
   const [categoryConfig, setCategoryConfig] = useState(null);
+  const [categoryImages, setCategoryImages] = useState({});
 
   const isAdminLink = typeof window !== "undefined" && /admin/i.test(window.location.hash || "");
   const [view, setView] = useState(isAdminLink ? "admin" : "store");
@@ -435,12 +457,14 @@ export default function App() {
         cc = { flat: FLAT_CATEGORIES, subcats: SUBCATS };
         await saveKey("category-config", cc);
       }
+      let ci = await loadCategoryImages();
 
       setCategoryConfig(cc);
       setProducts(p);
       setSettings(s);
       setOrders(o);
       setAdminAuth(a);
+      setCategoryImages(ci);
       setLoading(false);
     })();
   }, []);
@@ -503,6 +527,11 @@ export default function App() {
     setCategoryConfig(next);
     const r = await saveKey("category-config", next);
     if (!r.ok) { setSaveError("Não consegui salvar a nova ordem das categorias. Detalhe técnico: " + r.detail); } else { setSaveError(null); flashSaved(); }
+  }, []);
+  const persistCategoryImage = useCallback(async (name, image) => {
+    setCategoryImages((prev) => ({ ...prev, [name]: image }));
+    const r = await saveCategoryImage(name, image);
+    if (!r.ok) { setSaveError("Não consegui salvar a foto da categoria. Detalhe técnico: " + r.detail); } else { setSaveError(null); flashSaved(); }
   }, []);
   const refreshOrders = useCallback(async () => {
     const fresh = await loadKey("orders", []);
@@ -717,6 +746,8 @@ export default function App() {
           categoryConfig={categoryConfig}
           addCategory={addCategory}
           persistCategoryConfig={persistCategoryConfig}
+          categoryImages={categoryImages}
+          persistCategoryImage={persistCategoryImage}
           saveError={saveError}
           setSaveError={setSaveError}
           justSaved={justSaved}
@@ -1620,7 +1651,7 @@ function AdminGate({ isAdmin, setIsAdmin, ...rest }) {
   );
 }
 
-function AdminPanel({ onLogout, products, persistProducts, settings, persistSettings, orders, persistOrders, refreshOrders, setView, categoryConfig, addCategory, persistCategoryConfig, saveError, setSaveError, justSaved }) {
+function AdminPanel({ onLogout, products, persistProducts, settings, persistSettings, orders, persistOrders, refreshOrders, setView, categoryConfig, addCategory, persistCategoryConfig, categoryImages, persistCategoryImage, saveError, setSaveError, justSaved }) {
   const [tab, setTab] = useState("dashboard");
   const [newOrderAlert, setNewOrderAlert] = useState(false);
   const knownCountRef = useRef(orders.length);
@@ -1741,10 +1772,10 @@ function AdminPanel({ onLogout, products, persistProducts, settings, persistSett
       {tab === "dashboard" && <AdminDashboard products={products} orders={orders} />}
       {tab === "orders" && <AdminOrders orders={orders} persistOrders={persistOrders} />}
       {tab === "products" && <AdminProducts products={products} persistProducts={persistProducts} categoryConfig={categoryConfig} addCategory={addCategory} />}
-      {tab === "categories" && <AdminCategories categoryConfig={categoryConfig} persistCategoryConfig={persistCategoryConfig} products={products} persistProducts={persistProducts} />}
+      {tab === "categories" && <AdminCategories categoryConfig={categoryConfig} persistCategoryConfig={persistCategoryConfig} products={products} persistProducts={persistProducts} categoryImages={categoryImages} persistCategoryImage={persistCategoryImage} />}
       {tab === "neighborhoods" && <AdminNeighborhoods settings={settings} persistSettings={persistSettings} />}
       {tab === "hours" && <AdminHours settings={settings} persistSettings={persistSettings} />}
-      {tab === "print" && <AdminPrintMenu products={products} settings={settings} persistSettings={persistSettings} categoryConfig={categoryConfig} />}
+      {tab === "print" && <AdminPrintMenu products={products} settings={settings} persistSettings={persistSettings} categoryConfig={categoryConfig} categoryImages={categoryImages} />}
     </div>
   );
 }
@@ -2072,11 +2103,13 @@ function AdminProducts({ products, persistProducts, categoryConfig, addCategory 
   );
 }
 
-function AdminCategories({ categoryConfig, persistCategoryConfig, products, persistProducts }) {
+function AdminCategories({ categoryConfig, persistCategoryConfig, products, persistProducts, categoryImages, persistCategoryImage }) {
   const FLAT = categoryConfig?.flat || FLAT_CATEGORIES;
   const SUB = categoryConfig?.subcats || SUBCATS;
   const [editingCat, setEditingCat] = useState(null);
   const [editValue, setEditValue] = useState("");
+  const [uploadingCat, setUploadingCat] = useState(null);
+  const fileInputs = useRef({});
 
   function move(index, direction) {
     const newIndex = index + direction;
@@ -2130,10 +2163,23 @@ function AdminCategories({ categoryConfig, persistCategoryConfig, products, pers
     persistCategoryConfig({ flat: nextFlat, subcats: nextSubcats });
   }
 
+  async function handleCatPhoto(cat, file) {
+    if (!file) return;
+    setUploadingCat(cat);
+    try {
+      const dataUrl = await resizeImageFile(file, 700, 0.8);
+      await persistCategoryImage(cat, dataUrl);
+    } catch (err) {
+      console.error(err);
+      alert("Não consegui carregar essa imagem. Tenta outro arquivo (JPG, PNG ou WEBP).");
+    }
+    setUploadingCat(null);
+  }
+
   return (
     <div className="space-y-3">
       <p className="text-xs" style={{ color: C.gray }}>
-        Use as setas pra mudar a ordem em que as categorias aparecem como abas no cardápio. Toque no lápis pra renomear, ou na lixeira pra excluir (só é possível excluir categorias sem produtos).
+        Use as setas pra mudar a ordem em que as categorias aparecem como abas no cardápio. Toque no lápis pra renomear, na lixeira pra excluir (só é possível excluir categorias sem produtos), ou na foto pra escolher uma imagem que representa a categoria (aparece no cardápio impresso).
       </p>
       <div className="space-y-1">
         {FLAT.map((cat, i) => (
@@ -2142,6 +2188,29 @@ function AdminCategories({ categoryConfig, persistCategoryConfig, products, pers
             className="flex items-center justify-between rounded-lg p-2 gap-2"
             style={{ background: C.cream, border: `1px solid ${C.line}` }}
           >
+            <button
+              onClick={() => fileInputs.current[cat]?.click()}
+              className="shrink-0 rounded-lg overflow-hidden"
+              style={{ width: 40, height: 40, border: `1px solid ${C.line}`, background: "#fff" }}
+              aria-label={`Escolher foto para ${cat}`}
+            >
+              {uploadingCat === cat ? (
+                <div className="w-full h-full flex items-center justify-center text-[9px]" style={{ color: C.gray }}>...</div>
+              ) : categoryImages?.[cat] ? (
+                <img src={categoryImages[cat]} alt={cat} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <ImageIcon size={16} style={{ color: C.gray }} />
+                </div>
+              )}
+            </button>
+            <input
+              ref={(el) => (fileInputs.current[cat] = el)}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => handleCatPhoto(cat, e.target.files?.[0])}
+            />
             {editingCat === cat ? (
               <input
                 autoFocus
@@ -2406,7 +2475,7 @@ function AdminNeighborhoods({ settings, persistSettings }) {
 }
 
 // ================= IMPRIMIR CARDÁPIO (PDF) =================
-function AdminPrintMenu({ products, settings, persistSettings, categoryConfig }) {
+function AdminPrintMenu({ products, settings, persistSettings, categoryConfig, categoryImages }) {
   const [instagram, setInstagram] = useState(settings.instagram || "");
   const FLAT = categoryConfig?.flat || FLAT_CATEGORIES;
 
@@ -2429,7 +2498,8 @@ function AdminPrintMenu({ products, settings, persistSettings, categoryConfig })
       <div className="no-print space-y-3 rounded-xl p-4" style={{ background: C.cream, border: `1px solid ${C.line}` }}>
         <p className="text-sm" style={{ color: C.ink }}>
           Gera um cardápio pronto pra imprimir (ou salvar como PDF): capa com o logo, os produtos organizados em
-          folhas A4, e uma última página com os contatos do restaurante.
+          folhas A4 com os títulos de categoria em destaque (com foto), e uma última página com os contatos do
+          restaurante. Pra escolher a foto de cada categoria, vá na aba <b>Categorias</b>.
         </p>
         <div>
           <label className="text-xs font-bold" style={{ color: C.ink }}>Instagram (opcional, aparece na última página)</label>
@@ -2475,16 +2545,29 @@ function AdminPrintMenu({ products, settings, persistSettings, categoryConfig })
             .category-block { break-inside: avoid-column; margin-bottom: 18px; }
           }
           .category-title {
-            background: ${C.red};
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: linear-gradient(135deg, ${C.red}, ${C.redDeep});
             color: #fff;
-            font-weight: 800;
-            font-size: 1.05rem;
-            letter-spacing: 0.04em;
-            text-transform: uppercase;
-            padding: 6px 12px;
-            border-radius: 6px;
+            border-radius: 8px;
+            padding: 6px 10px 6px 6px;
             margin-bottom: 8px;
-            display: inline-block;
+            box-shadow: 0 0 0 2px ${C.gold};
+          }
+          .category-title img {
+            width: 34px;
+            height: 34px;
+            border-radius: 50%;
+            object-fit: cover;
+            border: 2px solid ${C.goldLight};
+            flex-shrink: 0;
+          }
+          .category-title span {
+            font-weight: 800;
+            font-size: 1rem;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
           }
         `}</style>
 
@@ -2500,7 +2583,10 @@ function AdminPrintMenu({ products, settings, persistSettings, categoryConfig })
         <div className="print-page menu-flow">
           {groups.map((g) => (
             <div key={g.cat} className="category-block">
-              <span className="category-title">{g.cat}</span>
+              <div className="category-title">
+                <img src={categoryImages?.[g.cat] || DEFAULT_IMAGE} alt={g.cat} />
+                <span>{g.cat}</span>
+              </div>
               <div className="space-y-2 mt-1">
                 {g.items.map((p) => (
                   <div key={p.id} className="print-item pb-1.5 mb-1.5" style={{ borderBottom: `1px solid ${C.line}` }}>
