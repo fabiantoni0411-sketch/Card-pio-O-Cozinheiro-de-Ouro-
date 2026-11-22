@@ -743,7 +743,7 @@ function SiteFooter({ setView }) {
       >
         Admin
       </button>
-      <span className="flex-1 text-center">Desenvolvido por Faby Bassitii</span>
+      <span className="flex-1 text-center">Desenvolvido por Faby Bassitti</span>
       <span style={{ width: 62 }} />
     </footer>
   );
